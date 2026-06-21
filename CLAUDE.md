@@ -11,8 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the application (depends on :startPrereqs — verifies/starts Qdrant, Postgres, Ollama)
 ./gradlew bootRun
 
-# Compile only — skips tests (some tests reference a non-existent VectorStoreConfig
-# and need a rewrite; see "Known stale tests" below).
+# Build without running the test suite
 ./gradlew build -x test
 
 # Run tests
@@ -113,7 +112,7 @@ Spring Boot 4.0.5 / Spring AI 2.0.0-M4 RAG application backed entirely by local 
 
 ```
 com.dinesh.rag.agent
-├── config/        OpenApi, Security, Async, AppProperties (@ConfigurationProperties)
+├── config/        OpenApi, Security (+CORS), Async, AppProperties, DataInitializer, AiConfig
 ├── controller/    Auth, Files, ChatV1, GlobalExceptionHandler
 ├── domain/
 │   ├── user/      User entity, UserRepository
@@ -122,12 +121,12 @@ com.dinesh.rag.agent
 │   ├── auth/      AuthService, JwtService, JwtAuthenticationFilter,
 │   │              UserDetailsServiceImpl, CurrentUserService
 │   ├── file/      FileService, FileStorageService, FileIngestionService,
-│   │              FileIngestionStateService
+│   │              FileIngestionStateService, IngestionTrigger (+Async/Immediate impls)
 │   └── chat/      ChatService (retrieve-then-generate over one file)
 ├── dto/
 │   ├── auth/      RegisterRequest, LoginRequest, AuthResponse
 │   ├── file/      FileUploadResponse, FileResponse, FileStatusResponse
-│   ├── chat/      ChatRequest, ChatResponse, Citation
+│   ├── chat/      ChatRequest, ChatResponse
 │   └── common/    ErrorResponse, PageResponse
 └── exception/     NotFoundException, DuplicateResourceException,
                    UnsupportedFileTypeException, InvalidCredentialsException,
@@ -145,7 +144,7 @@ com.dinesh.rag.agent
 | GET    | `/api/v1/files/{id}`          | Full file metadata |
 | GET    | `/api/v1/files/{id}/status`   | Cheap poll (status + chunk count + error) |
 | DELETE | `/api/v1/files/{id}`          | Removes vectors + DB row + blob (uploader only) |
-| POST   | `/api/v1/chat`                | RAG question over one file; returns `{ answer, citations[] }` |
+| POST   | `/api/v1/chat`                | RAG question over one file; returns `{ answer }` |
 
 `POST /api/v1/chat` takes `{ fileId, question }`. It looks up the file (404 if
 missing, 409 if not `READY`), runs a similarity search scoped to that
@@ -159,7 +158,7 @@ removed now that `/api/v1/chat` is in place.
 
 ### Ingestion pipeline (POST `/api/v1/files`)
 
-1. `FileService.upload` validates extension, writes the blob via `FileStorageService` (computing SHA-256 in the same streaming pass), inserts a `files` row with `status=PENDING`, and calls `FileIngestionService.ingest(fileId)` — an `@Async` no-op return.
+1. `FileService.upload` validates extension, writes the blob via `FileStorageService` (computing SHA-256 in the same streaming pass), inserts a `files` row with `status=PENDING`, and kicks off ingestion through `IngestionTrigger`. In prod, `AsyncIngestionTrigger` defers the `@Async` `FileIngestionService.ingest(fileId)` call until *after* the upload transaction commits (so the worker is guaranteed to see the row); in the `test` profile, `ImmediateIngestionTrigger` calls it synchronously so Mockito can verify it.
 2. The worker (`ingestionExecutor` thread):
    - Reads the file row via `FileIngestionStateService.loadForIngest` (separate `REQUIRES_NEW` Tx, no LAZY surprises).
    - Marks `PROCESSING`.
@@ -178,49 +177,37 @@ Qdrant, auto-configured by `spring-ai-starter-vector-store-qdrant`. The `VectorS
 
 - Qdrant collection must exist before the app starts (`initialize-schema: false`). `:startPrereqs` auto-creates it; see the Qdrant section.
 - Java 24 toolchain is required (configured in `build.gradle`).
-- The test class `RagAgentApplicationTest` lives under `com.dinesh.rag.rag_agent` (with underscore), while production code lives under `com.dinesh.rag.agent`. Don't "fix" the test package.
 - `RagAgentApplication` is annotated `@EnableAsync` and the async pool is defined in `AsyncConfig` (`ingestionExecutor` bean).
 - Schema is Flyway-owned with Hibernate in `validate` mode. Never set `ddl-auto: create/update` in `application.yaml` — write a new `V{n}` migration instead.
 
 ## Testing
 
-Two layers of test coverage for the Files + Auth APIs:
-
-### 1. JUnit integration tests (no external services required)
+JUnit integration tests cover the Auth, Files, and Chat APIs with **no external
+services required**:
 
 ```bash
 ./gradlew test
 ```
 
-`AuthControllerIT` and `FilesControllerIT` (`src/test/java/.../controller`) extend `AbstractIntegrationTest`, which boots the full Spring context against the `test` profile (`src/test/resources/application-test.yaml`):
+`AuthControllerIT`, `FilesControllerIT`, and `ChatV1ControllerIT`
+(`src/test/java/.../controller`) extend `AbstractIntegrationTest`, which boots the
+full Spring context against the `test` profile (`src/test/resources/application-test.yaml`):
 - H2 in PostgreSQL compatibility mode, Flyway disabled, Hibernate `ddl-auto: create-drop`.
-- `VectorStore`, `FileIngestionService`, and `ChatClient.Builder` are replaced with `@MockitoBean` mocks — no Qdrant or Ollama needed.
+- `VectorStore`, `FileIngestionService`, and `ChatClient` are replaced with `@MockitoBean` mocks — no Qdrant or Ollama needed.
 - MockMvc + the real Spring Security filter chain, so JWT auth is exercised exactly as in prod.
 
 Coverage:
 - Register (success, dup email, validation errors).
 - Login (success, case-insensitive email, wrong password, unknown user).
+- JWT filter: a valid token for a since-deleted user degrades gracefully (no 500).
 - Upload (no auth, empty, unsupported type, success → 202 with `ingest()` verified, duplicate SHA → 409).
 - List + search with pagination, shared-corpus visibility.
 - GET by id + status endpoint.
 - DELETE by uploader vs. non-uploader (403) vs. unknown id (404).
+- Chat (`/api/v1/chat`): READY file answers, 404 unknown file, 409 not-ready, zero-hit short-circuit, validation 400s.
 
-### 2. End-to-end smoke script (against a live stack)
-
-```bash
-bash scripts/smoke-test.sh
-# Override the host:
-BASE_URL=http://localhost:8080 bash scripts/smoke-test.sh
-```
-
-Hits every endpoint with `curl` against a running app, asserts status codes, polls `/status` until the real ingestion completes, and exercises the cross-user authorization rules. Requires Postgres + Qdrant + Ollama up and `bootRun` running. Uses `jq` for assertions.
-
-### Known dead code (slated for removal)
-
-`DocumentProcessingService` (+ `DocumentProcessingServiceTest`) is leftover from
-the never-built `/load-data-file` loader and is wired to no controller. It still
-compiles and its test passes, but nothing in the request path calls it — safe to
-delete in a follow-up cleanup.
+There is no checked-in end-to-end smoke script; for live testing hit the endpoints
+with `curl`/Swagger against a running `bootRun` stack.
 
 ## API
 

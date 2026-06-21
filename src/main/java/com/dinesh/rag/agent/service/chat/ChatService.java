@@ -59,16 +59,18 @@ public class ChatService {
 
     private final FileRepository fileRepository;
     private final VectorStore vectorStore;
-    private final ChatClient.Builder chatClientBuilder;
+    private final ChatClient chatClient;
     private final AppProperties.Chat chatProps;
 
     public ChatService(FileRepository fileRepository,
                        VectorStore vectorStore,
-                       ChatClient.Builder chatClientBuilder,
+                       ChatClient chatClient,
                        AppProperties appProperties) {
         this.fileRepository = fileRepository;
         this.vectorStore = vectorStore;
-        this.chatClientBuilder = chatClientBuilder;
+        // Injected as a singleton (built once in AiConfig) — immutable and
+        // thread-safe, so it's reused across every request rather than rebuilt.
+        this.chatClient = chatClient;
         this.chatProps = appProperties.chat();
     }
 
@@ -118,7 +120,7 @@ public class ChatService {
                 .reduce((a, b) -> a + "\n---\n" + b)
                 .orElse("");
 
-        return chatClientBuilder.build().prompt()
+        return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("Context:\n" + context + "\n\nQuestion: " + question)
                 .call()

@@ -33,9 +33,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>{@link FileIngestionService} — replaced; uploads succeed without
  *       actually running Tika / embeddings, and tests can verify
  *       {@code ingest()} / {@code deleteVectorsForFile()} were invoked.</li>
- *   <li>{@link ChatClient.Builder} — replaced with deep stubs so the
- *       {@code ChatService} constructor succeeds without Ollama, and tests
- *       can stub chat responses.</li>
+ *   <li>{@link ChatClient} — replaced with deep stubs so {@code ChatService}
+ *       has no real Ollama dependency, and tests can stub chat responses
+ *       directly on the same instance the service uses.</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = WebEnvironment.MOCK)
@@ -58,7 +58,7 @@ public abstract class AbstractIntegrationTest {
     protected FileIngestionService fileIngestionService;
 
     @MockitoBean(answers = Answers.RETURNS_DEEP_STUBS)
-    protected ChatClient.Builder chatClientBuilder;
+    protected ChatClient chatClient;
 
     // ----- auth helpers ------------------------------------------------
 

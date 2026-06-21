@@ -58,7 +58,7 @@ class ChatV1ControllerIT extends AbstractIntegrationTest {
                             new Document("It combines a retriever and an LLM.",
                                     Map.of("chunk_index", 1, "file_id", fileId.toString()))
                     ));
-            when(chatClientBuilder.build().prompt()
+            when(chatClient.prompt()
                     .system(anyString()).user(anyString()).call().content())
                     .thenReturn("RAG = Retrieval-Augmented Generation.");
 
@@ -121,7 +121,7 @@ class ChatV1ControllerIT extends AbstractIntegrationTest {
                     .andExpect(jsonPath("$.answer",
                             is("No relevant content was found in this document for that question.")));
 
-            verify(chatClientBuilder.build().prompt(), never()).user(anyString());
+            verify(chatClient.prompt(), never()).user(anyString());
         }
 
         @Test
