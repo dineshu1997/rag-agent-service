@@ -1,0 +1,65 @@
+# Test profile: H2 in PostgreSQL compatibility mode, no Flyway, no external services.
+spring:
+  datasource:
+    url: jdbc:h2:mem:rag_agent_test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      # Hibernate owns the schema in tests (Flyway can't run the pgcrypto extension on H2).
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        jdbc:
+          time_zone: UTC
+        # Keep test logs tidy
+        show_sql: false
+    open-in-view: false
+
+  flyway:
+    enabled: false
+
+  ai:
+    ollama:
+      # Pointed at a black hole; the @MockitoBean replaces the bean before any call is made.
+      base-url: http://localhost:0
+      chat:
+        options:
+          model: llama3.2
+      embedding:
+        options:
+          model: nomic-embed-text
+    vectorstore:
+      qdrant:
+        host: localhost
+        port: 0
+        collection-name: my-rag-agent
+        use-tls: false
+        initialize-schema: false
+
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+
+app:
+  jwt:
+    # Long enough for HS256 (≥ 32 bytes).
+    secret: test-only-secret-do-not-use-in-prod-aaaaaaaaaaaaaaaaaaaaaa==
+    expiration-minutes: 60
+    issuer: rag-agent-test
+  files:
+    # Will be overridden per-test to a JUnit @TempDir.
+    storage-path: ./build/tmp/test-files
+    allowed-extensions:
+      - .txt
+      - .md
+      - .pdf
+      - .docx
+  chat:
+    top-k: 4
+    # 0.0 — let mocked vector store return whatever we tell it to in tests.
+    similarity-threshold: 0.0

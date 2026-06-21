@@ -1,0 +1,127 @@
+plugins {
+	id 'java'
+	id 'jacoco'
+	id 'org.springframework.boot' version '4.0.5'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.dinesh.rag'
+version = '0.0.1-SNAPSHOT'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(24)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+ext {
+	set('springAiVersion', "2.0.0-M4")
+}
+
+ext {
+	set('jjwtVersion', '0.12.6')
+}
+
+dependencies {
+	// --- Spring AI ---
+	implementation 'org.springframework.ai:spring-ai-advisors-vector-store'
+	implementation 'org.springframework.ai:spring-ai-starter-vector-store-qdrant'
+	implementation 'org.springframework.ai:spring-ai-starter-model-ollama'
+	implementation 'org.springframework.ai:spring-ai-tika-document-reader'
+
+	// --- Web / API docs ---
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	implementation 'org.springframework.boot:spring-boot-starter-web-services'
+	implementation 'org.springframework.boot:spring-boot-starter-validation'
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.2'
+
+	// --- Persistence ---
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	// Spring Boot 4 split per-tech autoconfig out of spring-boot-autoconfigure.
+	// FlywayAutoConfiguration now lives in `spring-boot-flyway`; without this
+	// the migration runner is silently skipped and validate mode boot-fails.
+	implementation 'org.springframework.boot:spring-boot-flyway'
+	implementation 'org.flywaydb:flyway-core'
+	implementation 'org.flywaydb:flyway-database-postgresql'
+	runtimeOnly 'org.postgresql:postgresql'
+
+	// --- Security + JWT ---
+	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation "io.jsonwebtoken:jjwt-api:${jjwtVersion}"
+	runtimeOnly "io.jsonwebtoken:jjwt-impl:${jjwtVersion}"
+	runtimeOnly "io.jsonwebtoken:jjwt-jackson:${jjwtVersion}"
+
+	// --- Lombok + dev tools ---
+	compileOnly 'org.projectlombok:lombok'
+	developmentOnly 'org.springframework.boot:spring-boot-devtools'
+	annotationProcessor 'org.projectlombok:lombok'
+
+	// --- Tests ---
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-webservices-test'
+	testImplementation 'org.springframework.security:spring-security-test'
+	testImplementation 'org.mockito:mockito-junit-jupiter'
+	testRuntimeOnly 'com.h2database:h2'
+	testCompileOnly 'org.projectlombok:lombok'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	testAnnotationProcessor 'org.projectlombok:lombok'
+}
+
+dependencyManagement {
+	imports {
+		mavenBom "org.springframework.ai:spring-ai-bom:${springAiVersion}"
+	}
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+	finalizedBy jacocoTestReport
+}
+
+tasks.register('startPrereqs', Exec) {
+	description = 'Verify/start all backend prerequisites (Qdrant, Postgres, Ollama + models) before the app boots.'
+	group = 'application'
+	workingDir projectDir
+
+	def script = file('src/main/resources/script/start-prereqs.sh').absolutePath
+	def bashExe = 'bash'
+	if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+		// Prefer Git Bash over WSL's bash.exe (which fails when no distro is installed).
+		def candidates = [
+			'C:\\Program Files\\Git\\bin\\bash.exe',
+			'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+			System.getenv('PROGRAMFILES') ? "${System.getenv('PROGRAMFILES')}\\Git\\bin\\bash.exe" : null,
+		].findAll { it != null }
+		def found = candidates.find { new File(it).exists() }
+		if (found) {
+			bashExe = found
+		}
+	}
+	commandLine bashExe, script
+}
+
+tasks.named('bootRun') {
+	dependsOn 'startPrereqs'
+	jvmArgs(
+		// Suppress Netty's sun.misc.Unsafe terminal-deprecation warnings on JDK 24+.
+		// Netty 4.2.x still relies on Unsafe for direct-memory allocation; this
+		// tells Netty to use the non-Unsafe fallback path instead.
+		'-Dio.netty.noUnsafe=true'
+	)
+}
+
+jacoco {
+	toolVersion = "0.8.13"
+}
+
+jacocoTestReport {
+	dependsOn test
+	reports {
+		xml.required = true
+		html.required = true
+	}
+}

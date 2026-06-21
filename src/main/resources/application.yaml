@@ -1,0 +1,122 @@
+spring:
+  application:
+    name: rag-agent
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/rag_agent}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:admin}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema. Hibernate must never DDL — only verify that
+      # the mapped entities still line up with what the migrations created.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  mvc:
+    # Spring Boot 4 throws NoHandlerFoundException by default; keep it on so
+    # GlobalExceptionHandler can map unmapped paths to a clean 404.
+    throw-exception-if-no-handler-found: true
+
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: llama3.2
+      embedding:
+        options:
+          model: nomic-embed-text
+    vectorstore:
+      qdrant:
+        host: localhost
+        port: 6334
+        collection-name: my-rag-agent
+        use-tls: false
+        initialize-schema: false
+
+  servlet:
+    multipart:
+      # Cap per-upload at 10 MB. Anything larger is rejected with 413
+      # (see GlobalExceptionHandler#uploadTooLarge). Override in prod via the
+      # SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE env var if needed.
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# ----- Application-specific config -----
+app:
+  jwt:
+    # 256-bit base64 secret. Override in prod via APP_JWT_SECRET.
+    # Default below is a development-only placeholder.
+    secret: ${APP_JWT_SECRET:dev-only-secret-change-me-please-use-a-256-bit-base64-encoded-key-here!!}
+    expiration-minutes: ${APP_JWT_EXPIRATION_MINUTES:240}
+    issuer: rag-agent
+
+  files:
+    # Where uploaded blobs live on disk. Override via APP_FILES_STORAGE_PATH.
+    storage-path: ${APP_FILES_STORAGE_PATH:./data/files}
+    allowed-extensions:
+      - .pdf
+      - .doc
+      - .docx
+      - .txt
+      - .md
+      - .markdown
+      - .csv
+      - .json
+      - .xml
+      - .html
+      - .htm
+      - .java
+      - .kt
+      - .py
+      - .js
+      - .ts
+      - .go
+      - .rs
+      - .c
+      - .h
+      - .cpp
+      - .hpp
+      - .cs
+      - .rb
+      - .php
+      - .sql
+      - .yaml
+      - .yml
+      - .properties
+
+  chat:
+    # How many chunks to fetch per question.
+    top-k: 4
+    # Cosine similarity floor (0..1). Hits below this are dropped before they
+    # reach the LLM, so a question whose best match is still weak gets the
+    # "no relevant content" reply instead of an answer grounded in noise.
+    #
+    # IMPORTANT: tune this to the embedding model. nomic-embed-text scores a
+    # SHORT query against a LONGER chunk in the ~0.40-0.55 range even when the
+    # chunk is clearly relevant (measured against real ingested docs). A floor
+    # of 0.6 silently filtered EVERYTHING; even 0.35 dropped genuinely-relevant
+    # chunks for real questions, so context the model needed never reached it.
+    # 0.2 is deliberately permissive so relevant content reliably makes it into
+    # the prompt, while still dropping clearly off-topic chunks. Do NOT raise it
+    # without re-testing chat against real documents first.
+    similarity-threshold: 0.2
+
+# Don't leak stack traces in error responses. DevTools defaults this to "always"
+# which is fine locally but unsafe to forget about. Explicit `never` wins.
+server:
+  error:
+    include-stacktrace: never
+    include-message: always
